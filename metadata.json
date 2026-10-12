@@ -1,0 +1,6 @@
+{
+  "name": "RESTOCK AI",
+  "description": "Intelligent resource recovery and electronic waste reuse platform connecting businesses with authorized recyclers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

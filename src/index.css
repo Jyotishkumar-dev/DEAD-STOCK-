@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-forest: #234D35;
+    --color-olive: #626B45;
+    --color-sage: #DCE5D5;
+    --color-cream: #F7F4EC;
+    --color-ivory: #FFFEFA;
+    --color-charcoal: #252A25;
+    --color-muted-grey: #777A72;
+    --color-soft-border: #E6E2D8;
+  }
+
+  body {
+    background-color: #F7F4EC;
+    color: #252A25;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  h1, h2, h3, .font-serif {
+    font-family: 'DM Serif Display', Georgia, serif;
+  }
+}
+
+/* Custom utility styles */
+.font-serif-heading {
+  font-family: 'DM Serif Display', Georgia, serif;
+}
+
+.font-sans-body {
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Subtle organic grain overlay texture */
+.subtle-grain {
+  background-image: radial-gradient(rgba(35, 77, 53, 0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+/* Smooth focus rings */
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid #234D35;
+  outline-offset: 2px;
+}
