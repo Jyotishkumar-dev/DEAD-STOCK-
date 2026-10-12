@@ -44,6 +44,15 @@ import {
   RecoveryRequestStatus,
   User 
 } from './types';
+import { 
+  apiFetchInventory, 
+  apiSaveInventoryItem, 
+  apiDeleteInventoryItem, 
+  apiFetchRecoveryRequests, 
+  apiSaveRecoveryRequest, 
+  apiUpdateRecoveryRequest,
+  setApiAuthToken 
+} from './services/apiService';
 
 export default function App() {
   // Navigation View State: 'public' | 'auth' | 'dashboard'
@@ -81,7 +90,28 @@ export default function App() {
     }
   });
 
-  // Synchronize localStorage
+  // Synchronize localStorage and Backend PostgreSQL
+  useEffect(() => {
+    // Initial fetch from PostgreSQL backend
+    async function initDbSync() {
+      try {
+        const [dbItems, dbReqs] = await Promise.all([
+          apiFetchInventory(),
+          apiFetchRecoveryRequests()
+        ]);
+        if (dbItems && dbItems.length > 0) {
+          setInventory(dbItems);
+        }
+        if (dbReqs && dbReqs.length > 0) {
+          setRequests(dbReqs);
+        }
+      } catch (err) {
+        console.warn('Initial database sync error:', err);
+      }
+    }
+    initDbSync();
+  }, []);
+
   useEffect(() => {
     try {
       localStorage.setItem('restock_ai_inventory_v2', JSON.stringify(inventory));
@@ -102,8 +132,12 @@ export default function App() {
     try {
       if (currentUser) {
         localStorage.setItem('restock_ai_user', JSON.stringify(currentUser));
+        if (currentUser.isDemo) {
+          setApiAuthToken(`demo-token-${currentUser.id}`, currentUser.email);
+        }
       } else {
         localStorage.removeItem('restock_ai_user');
+        setApiAuthToken(null);
       }
     } catch (e) {
       console.warn('User storage error', e);
@@ -127,12 +161,16 @@ export default function App() {
   // Authentication Handlers
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
+    if (user.isDemo) {
+      setApiAuthToken(`demo-token-${user.id}`, user.email);
+    }
     setCurrentView('dashboard');
     setDashboardTab('overview');
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
+    setApiAuthToken(null);
     setCurrentView('public');
   };
 
@@ -141,28 +179,37 @@ export default function App() {
     setCurrentView('auth');
   };
 
-  // Inventory Handlers
+  // Inventory Handlers (Connected to PostgreSQL)
   const handleAddInventoryItem = (item: ResourceInventoryItem) => {
     setInventory((prev) => [item, ...prev]);
+    apiSaveInventoryItem(item).catch(console.warn);
   };
 
   const handleUpdateInventoryItem = (updatedItem: ResourceInventoryItem) => {
     setInventory((prev) => prev.map((item) => (item.id === updatedItem.id ? updatedItem : item)));
+    apiSaveInventoryItem(updatedItem).catch(console.warn);
   };
 
   const handleDeleteInventoryItem = (id: string) => {
     setInventory((prev) => prev.filter((item) => item.id !== id));
+    apiDeleteInventoryItem(id).catch(console.warn);
   };
 
-  // Recovery Requests Handlers
+  // Recovery Requests Handlers (Connected to PostgreSQL)
   const handleCreateRequest = (newRequest: RecoveryRequest) => {
     setRequests((prev) => [newRequest, ...prev]);
+    apiSaveRecoveryRequest(newRequest).catch(console.warn);
+
     // Update inventory item status to 'Request Created'
     setInventory((prev) =>
       prev.map((item) =>
         item.id === newRequest.inventoryItemId ? { ...item, status: 'Request Created' } : item
       )
     );
+    const linkedItem = inventory.find(i => i.id === newRequest.inventoryItemId);
+    if (linkedItem) {
+      apiSaveInventoryItem({ ...linkedItem, status: 'Request Created' }).catch(console.warn);
+    }
   };
 
   const handleUpdateRequestStatus = (
@@ -170,20 +217,23 @@ export default function App() {
     newStatus: RecoveryRequestStatus,
     note?: string
   ) => {
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    const historyEntry = {
+      status: newStatus,
+      timestamp: now,
+      note: note || `Status updated to ${newStatus}`
+    };
+
     setRequests((prev) =>
       prev.map((req) => {
         if (req.id === requestId) {
-          const now = new Date().toISOString().replace('T', ' ').slice(0, 16);
-          const historyEntry = {
-            status: newStatus,
-            timestamp: now,
-            note: note || `Status updated to ${newStatus}`
-          };
-          return {
+          const updated = {
             ...req,
             status: newStatus,
             statusHistory: [...req.statusHistory, historyEntry]
           };
+          apiUpdateRecoveryRequest(requestId, updated).catch(console.warn);
+          return updated;
         }
         return req;
       })
@@ -194,9 +244,14 @@ export default function App() {
       const targetReq = requests.find((r) => r.id === requestId);
       if (targetReq) {
         setInventory((prev) =>
-          prev.map((item) =>
-            item.id === targetReq.inventoryItemId ? { ...item, status: 'Scheduled' } : item
-          )
+          prev.map((item) => {
+            if (item.id === targetReq.inventoryItemId) {
+              const updated = { ...item, status: 'Scheduled' as const };
+              apiSaveInventoryItem(updated).catch(console.warn);
+              return updated;
+            }
+            return item;
+          })
         );
       }
     } else if (newStatus === 'Completed' || newStatus === 'Collected') {

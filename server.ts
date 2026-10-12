@@ -3,6 +3,19 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import { optionalAuth, requireAuth, AuthRequest } from './src/middleware/auth.ts';
+import { 
+  getDbInventory, 
+  upsertDbInventoryItem, 
+  deleteDbInventoryItem, 
+  getDbRecoveryRequests, 
+  upsertDbRecoveryRequest, 
+  getDbPartners, 
+  upsertDbPartner, 
+  seedInitialDataIfEmpty 
+} from './src/db/repository.ts';
+import { getOrCreateUser } from './src/db/users.ts';
+import { SAMPLE_PARTNERS, INITIAL_INVENTORY, INITIAL_REQUESTS } from './src/data/mockData.ts';
 
 dotenv.config();
 
@@ -164,7 +177,137 @@ function generateDemoAnalysis(description: string, deviceName?: string, userQuan
   };
 }
 
-// API Route: AI Item Analysis
+// ============================================================================
+// DATABASE-BACKED API ENDPOINTS (PostgreSQL via Cloud SQL)
+// ============================================================================
+
+// 1. User Synchronization endpoint
+app.post('/api/auth/sync-user', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const { uid, email, name, role, organization, isDemo } = req.body;
+    const effectiveUid = uid || req.user?.uid || `demo-user-${Date.now()}`;
+    const effectiveEmail = email || req.user?.email || 'demo@restock.eco';
+
+    const syncedUser = await getOrCreateUser(
+      effectiveUid,
+      effectiveEmail,
+      name,
+      role || 'business',
+      organization,
+      isDemo ?? false
+    );
+
+    res.json({ success: true, user: syncedUser });
+  } catch (error: any) {
+    console.error('[API] /api/auth/sync-user error:', error);
+    res.status(500).json({ error: error.message || 'Failed to sync user' });
+  }
+});
+
+// 2. Inventory Endpoints
+app.get('/api/inventory', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const items = await getDbInventory();
+    res.json(items);
+  } catch (error: any) {
+    console.error('[API] GET /api/inventory error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch inventory' });
+  }
+});
+
+app.post('/api/inventory', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const item = req.body;
+    if (!item.id || !item.category || !item.deviceType) {
+      return res.status(400).json({ error: 'Missing required inventory item attributes' });
+    }
+
+    const userUid = req.user?.uid || 'demo-user-1';
+    const saved = await upsertDbInventoryItem(item, userUid);
+    res.json({ success: true, item: saved });
+  } catch (error: any) {
+    console.error('[API] POST /api/inventory error:', error);
+    res.status(500).json({ error: error.message || 'Failed to save inventory item' });
+  }
+});
+
+app.delete('/api/inventory/:id', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    await deleteDbInventoryItem(id);
+    res.json({ success: true, id });
+  } catch (error: any) {
+    console.error('[API] DELETE /api/inventory/:id error:', error);
+    res.status(500).json({ error: error.message || 'Failed to delete inventory item' });
+  }
+});
+
+// 3. Recovery Requests Endpoints
+app.get('/api/requests', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const requests = await getDbRecoveryRequests();
+    res.json(requests);
+  } catch (error: any) {
+    console.error('[API] GET /api/requests error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch recovery requests' });
+  }
+});
+
+app.post('/api/requests', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const requestData = req.body;
+    if (!requestData.id || !requestData.inventoryItemId) {
+      return res.status(400).json({ error: 'Missing required request attributes' });
+    }
+
+    const userUid = req.user?.uid || 'demo-user-1';
+    const saved = await upsertDbRecoveryRequest(requestData, userUid);
+    res.json({ success: true, request: saved });
+  } catch (error: any) {
+    console.error('[API] POST /api/requests error:', error);
+    res.status(500).json({ error: error.message || 'Failed to create recovery request' });
+  }
+});
+
+app.put('/api/requests/:id', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    const requestData = { ...req.body, id };
+    const userUid = req.user?.uid || 'demo-user-1';
+    const updated = await upsertDbRecoveryRequest(requestData, userUid);
+    res.json({ success: true, request: updated });
+  } catch (error: any) {
+    console.error('[API] PUT /api/requests/:id error:', error);
+    res.status(500).json({ error: error.message || 'Failed to update recovery request' });
+  }
+});
+
+// 4. Recovery Partners Endpoints
+app.get('/api/partners', async (_req, res) => {
+  try {
+    const partners = await getDbPartners();
+    res.json(partners);
+  } catch (error: any) {
+    console.error('[API] GET /api/partners error:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch recovery partners' });
+  }
+});
+
+app.post('/api/partners', optionalAuth, async (req: AuthRequest, res) => {
+  try {
+    const partner = req.body;
+    if (!partner.id || !partner.name) {
+      return res.status(400).json({ error: 'Missing required partner fields' });
+    }
+    const saved = await upsertDbPartner(partner);
+    res.json({ success: true, partner: saved });
+  } catch (error: any) {
+    console.error('[API] POST /api/partners error:', error);
+    res.status(500).json({ error: error.message || 'Failed to save partner' });
+  }
+});
+
+// 5. API Route: AI Item Analysis
 app.post('/api/analyze-item', async (req, res) => {
   try {
     const { description, deviceName, quantity, condition, imageBase64, imageMimeType } = req.body;
@@ -339,6 +482,13 @@ Mandatory Rules:
 
 // Setup Vite middleware in dev or static files in production
 async function startServer() {
+  // Seed database initially
+  try {
+    await seedInitialDataIfEmpty(SAMPLE_PARTNERS, INITIAL_INVENTORY, INITIAL_REQUESTS);
+  } catch (seedErr) {
+    console.warn('[RESTOCK AI Server] Notice during initial seed:', seedErr);
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -354,7 +504,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[RESTOCK AI] Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`[RESTOCK AI] Server listening on http://0.0.0.0:${PORT} with PostgreSQL database backend.`);
   });
 }
 
